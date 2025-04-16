@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semgrep Scan Results</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .finding-card {
+            transition: all 0.3s ease;
+        }
+        .finding-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center">
+                    <h1 class="text-2xl font-bold text-gray-900">Semgrep Scan Results</h1>
+                    <div class="flex items-center gap-4">
+                        <div class="text-sm text-gray-500">Generated on <span id="scan-date">Now</span></div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+            <!-- Stats -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-white rounded-lg shadow p-4 cursor-pointer hover:bg-gray-50" onclick="filterFindings('all')">
+                    <h3 class="text-sm font-medium text-gray-500">Total Findings</h3>
+                    <p class="text-2xl font-semibold" id="total-findings">0</p>
+                </div>
+                <div class="bg-red-50 rounded-lg shadow p-4 cursor-pointer hover:bg-red-100" onclick="filterFindings('high')">
+                    <h3 class="text-sm font-medium text-red-600">High Severity</h3>
+                    <p class="text-2xl font-semibold text-red-600" id="high-findings">0</p>
+                </div>
+                <div class="bg-yellow-50 rounded-lg shadow p-4 cursor-pointer hover:bg-yellow-100" onclick="filterFindings('medium')">
+                    <h3 class="text-sm font-medium text-yellow-600">Medium Severity</h3>
+                    <p class="text-2xl font-semibold text-yellow-600" id="medium-findings">0</p>
+                </div>
+                <div class="bg-blue-50 rounded-lg shadow p-4 cursor-pointer hover:bg-blue-100" onclick="filterFindings('low')">
+                    <h3 class="text-sm font-medium text-blue-600">Low Severity</h3>
+                    <p class="text-2xl font-semibold text-blue-600" id="low-findings">0</p>
+                </div>
+            </div>
+
+            <!-- Results -->
+            <div id="findings-container" class="space-y-4">
+                <!-- Findings will be inserted here by JavaScript -->
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let reportData = { results: [] };
+        let currentFilter = 'all';
+
+        // Function to load results automatically
+        async function loadResultsFromDirectory() {
+            try {
+                // Fetch the list of result filenames from the PHP script
+                const indexResponse = await fetch('/list_results.php');
+                if (!indexResponse.ok) {
+                    throw new Error(`HTTP error! status: ${indexResponse.status} - Could not fetch /list_results.php`);
+                }
+                const reportFiles = await indexResponse.json();
+
+                if (!Array.isArray(reportFiles)) {
+                     throw new Error('/list_results.php should return a JSON array of filenames.');
+                }
+
+                const fetchPromises = reportFiles.map(filename =>
+                    fetch(`results/${filename}`)
+                        .then(response => {
+                            if (!response.ok) {
+                                console.error(`Failed to load ${filename}: ${response.statusText}`);
+                                return null; // Skip failed files
+                            }
+                            return response.json();
+                        })
+                        .catch(error => {
+                            console.error(`Error fetching or parsing ${filename}:`, error);
+                            return null; // Skip files with errors
+                        })
+                );
+
+                const allReportData = await Promise.all(fetchPromises);
+                let aggregatedResults = [];
+
+                allReportData.forEach(rawData => {
+                    if (rawData && rawData.results) {
+                         const processedResults = rawData.results.map(finding => ({
+                            title: finding.check_id.split('.').pop(),
+                            message: finding.extra.message,
+                            severity: finding.extra.metadata.impact || 'UNKNOWN',
+                            code: {
+                                path: finding.path,
+                                line: finding.start.line,
+                                content: finding.lines || finding.extra.lines || '(No code available)'
+                            }
+                        }));
+                        aggregatedResults = aggregatedResults.concat(processedResults);
+                    }
+                });
+
+                reportData.results = aggregatedResults;
+                displayFindings(reportData.results);
+                updateStats(reportData.results);
+                document.getElementById('scan-date').textContent = new Date().toLocaleString();
+
+
+            } catch (error) {
+                console.error('Error loading reports:', error);
+                const container = document.getElementById('findings-container');
+                container.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                    <strong class="font-bold">Error:</strong>
+                    <span class="block sm:inline"> Failed to load scan results. Check console for details. Ensure the PHP script /list_results.php is working and the results directory is correctly mounted and accessible.</span>
+                </div>`;
+                // Optionally clear stats or show error state
+                 document.getElementById('total-findings').textContent = 'ERR';
+                 document.getElementById('high-findings').textContent = 'ERR';
+                 document.getElementById('medium-findings').textContent = 'ERR';
+                 document.getElementById('low-findings').textContent = 'ERR';
+            }
+        }
+
+        function updateStats(findings) {
+            document.getElementById('total-findings').textContent = findings.length;
+            document.getElementById('high-findings').textContent = findings.filter(f => f.severity === 'HIGH').length;
+            document.getElementById('medium-findings').textContent = findings.filter(f => f.severity === 'MEDIUM').length;
+            document.getElementById('low-findings').textContent = findings.filter(f => f.severity === 'LOW').length;
+        }
+
+        function getSeverityColor(severity) {
+            switch(severity.toUpperCase()) {
+                case 'HIGH': return 'red';
+                case 'MEDIUM': return 'yellow';
+                case 'LOW': return 'blue';
+                default: return 'gray';
+            }
+        }
+
+        function displayFindings(findings) {
+            const container = document.getElementById('findings-container');
+            container.innerHTML = '';
+
+            findings.forEach(finding => {
+                const severityColor = getSeverityColor(finding.severity);
+                const card = document.createElement('div');
+                card.className = `bg-white rounded-lg shadow-sm p-6 mb-4 border-l-4 border-${severityColor}-500`;
+                
+                card.innerHTML = `
+                    <div class="mb-4 flex justify-between items-start">
+                        <div>
+                            <h3 class="text-lg font-semibold mb-2">${finding.title}</h3>
+                            <p class="text-gray-600">${finding.message}</p>
+                        </div>
+                        <span class="px-2 py-1 text-sm font-medium rounded-full bg-${severityColor}-100 text-${severityColor}-800">
+                            ${finding.severity}
+                        </span>
+                    </div>
+                    
+                    <div class="bg-gray-100 rounded p-2 text-sm text-gray-600 mb-3">
+                        ${finding.code.path}:${finding.code.line}
+                    </div>
+
+                    <div class="bg-gray-900 rounded-lg p-4 overflow-x-auto">
+                        <pre class="text-sm text-gray-100">${finding.code.content}</pre>
+                    </div>
+                `;
+                
+                container.appendChild(card);
+            });
+        }
+
+        function filterFindings(severity) {
+            currentFilter = severity;
+            let findings = reportData.results;
+            
+            if (severity !== 'all') {
+                findings = findings.filter(f => f.severity.toUpperCase() === severity.toUpperCase());
+            }
+            
+            displayFindings(findings);
+            
+            // Update visual feedback for active filter
+            document.querySelectorAll('.grid > div').forEach(card => {
+                card.classList.remove('ring-2', 'ring-blue-500');
+            });
+            if (severity === 'all') {
+                document.querySelector('.grid > div:first-child').classList.add('ring-2', 'ring-blue-500');
+            } else {
+                document.querySelector(`.grid > div[onclick="filterFindings('${severity}')"]`).classList.add('ring-2', 'ring-blue-500');
+            }
+        }
+
+        // Load results when the page is ready
+        document.addEventListener('DOMContentLoaded', loadResultsFromDirectory);
+    </script>
+</body>
+</html>
